@@ -26,6 +26,8 @@ Implementation Notes
 
 import time
 
+import microcontroller
+
 try:
     from typing import Union
 
@@ -35,6 +37,31 @@ except ImportError:
 
 __version__ = "0.0.0+auto.0"
 __repo__ = "https://github.com/your-repo/Adafruit_CircuitPython_HX711.git"
+
+
+def read_fast(clock_pin: digitalio.DigitalInOut, data_pin: digitalio.DigitalInOut, size: int):
+    value: int = 0  # return value
+    assert not clock_pin.value
+    assert size > 0
+    # The first iteration of the while loop takes longer, so to cancel
+    # this problem, we skip the first clock
+    clock_to_skip: int = 1
+    # Disable interrupts just before the loop
+    microcontroller.disable_interrupts()
+    while size > 0:
+        if clock_to_skip <= 0:  # no more skipping
+            clock_pin.value = True
+            size -= 1
+        microcontroller.delay_us(1)
+        if clock_to_skip > 0:
+            clock_to_skip -= 1  # decrement skip counter and do not read
+        else:
+            value = (value << 1) | data_pin.value
+        clock_pin.value = False
+        microcontroller.delay_us(1)
+    # Re-enable interrupts as soon as possible
+    microcontroller.enable_interrupts()
+    return value
 
 
 class HX711:
@@ -78,7 +105,8 @@ class HX711:
         :param chan_gain: Gain and channel configuration.
         :return: ADC value.
         """
-        self._read_channel(chan_gain)  # First, set the desired gain and discard this read
+        # First, set the desired gain and discard this read
+        self._read_channel(chan_gain)
         return self._read_channel(chan_gain)  # Now perform the actual read
 
     def _read_channel(self, chan_gain: int) -> int:
@@ -103,18 +131,7 @@ class HX711:
             pass  # Wait until the HX711 is ready
 
         self._clock_pin.value = False
-        value = 0
-        for _ in range(24):  # Read 24 bits from DOUT
-            self._clock_pin.value = True
-            time.sleep(0.000001)  # 1 microsecond delay
-            value = (value << 1) | self._data_pin.value
-            self._clock_pin.value = False
-            time.sleep(0.000001)  # 1 microsecond delay
-
-        # Set gain for next reading
-        for _ in range(chan_gain - 24):
-            self._clock_pin.value = True
-            self._clock_pin.value = False
+        value = read_fast(self._clock_pin, self._data_pin, chan_gain) >> (chan_gain - 24)
 
         # Convert to 32-bit signed integer
         if value & 0x80_00_00:
